@@ -1,0 +1,626 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>clock-perf-widget v2.2.0 · 样式预览</title>
+<!-- 单文件零依赖。所有数值抄自 client.mjs（CLOCK_LOOKS / CARD_SHELL_CSS / makeMetricRow / applyScale），
+     scale=1、cardOpacity=0.55、backdropOpacity=0.55、colors 为默认值。
+     唯一差异：真实挂件用 position:fixed + JS translate（避免与预览排版冲突，这里改成 position:relative）。 -->
+<style>
+  :root {
+    --clock: #f4f4f6;
+    --fps-value: #f4f4f6;
+    --fps-label: #9aa4b2;
+    --perf-label: #9aa4b2;
+    --perf-value: #f4f4f6;
+    --cpu: #5ac8fa;
+    --memory: #34c759;
+    --gpu: #ff9f0a;
+    --ui: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Courier New", monospace;
+  }
+
+  html, body {
+    margin: 0;
+    padding: 28px;
+    background: #0d0d0f;
+    color: #f4f4f6;
+    font-family: var(--ui);
+    font-size: 14px;
+  }
+
+  h1 {
+    margin: 0 0 4px;
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+  }
+
+  .note {
+    margin: 0 0 26px;
+    color: #8b8f99;
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
+  .grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 26px;
+    align-items: flex-start;
+  }
+
+  .demo {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .demo > h2 {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    color: #8b8f99;
+    text-transform: uppercase;
+  }
+
+  /* CARD_SHELL_CSS —— 与 client.mjs 一致，position 换成 relative 仅供预览 */
+  .card {
+    box-sizing: border-box;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background-color: rgba(18, 18, 22, 0.55);
+    background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0));
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
+    border-radius: 12px;
+    padding: 8px 11px;
+    font-family: var(--ui);
+    font-size: 12px;              /* applyScale: 12 * scale */
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+    color: var(--clock);
+    contain: layout style;
+  }
+
+  /* ------------------------------------------------------------ minimal */
+
+  .minimal .clock-main { display: flex; align-items: baseline; gap: 10px; }
+  .minimal .clock-time {
+    display: inline-block;
+    font-size: 3.2em;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1;
+  }
+  .minimal .clock-date-inline {
+    display: inline-block;
+    font-size: 0.8em;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    opacity: 0.85;
+  }
+  .minimal .clock-weekday-inline {
+    display: inline-block;
+    font-size: 0.8em;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    opacity: 0.55;
+  }
+
+  /* ----------------------------------------------------------- terminal */
+
+  .terminal .card { font-family: var(--mono); }
+  .terminal .clock-row-top { display: flex; align-items: baseline; gap: 10px; }
+  .terminal .clock-prompt { display: inline-block; font-size: 0.95em; font-weight: 700; opacity: 0.85; }
+  .terminal .clock-date-top {
+    display: inline-block;
+    font-size: 0.72em;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    opacity: 0.75;
+  }
+  .terminal .clock-weekday-top {
+    display: inline-block;
+    font-size: 0.72em;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    opacity: 0.55;
+  }
+  .terminal .clock-main { display: flex; align-items: baseline; gap: 0; }
+  .terminal .clock-term {
+    display: inline-flex;
+    align-items: baseline;
+    font-size: 2.6em;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    line-height: 1;
+  }
+  .terminal .clock-suffix {
+    display: inline-block;
+    font-size: 0.5em;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    opacity: 0.6;
+  }
+  .terminal .clock-cursor {
+    display: inline-block;
+    font-size: 2.2em;
+    font-weight: 400;
+    line-height: 1;
+    animation: blink 1s steps(1, end) infinite;  /* 真实实现：JS 每 500ms 切换 opacity */
+  }
+  .terminal .clock-term-colon { animation: blink 1s steps(1, end) infinite; }
+
+  @keyframes blink {
+    0%, 49% { opacity: 1; }
+    50%, 100% { opacity: 0; }
+  }
+
+  /* ------------------------------------------------------------ stacked */
+
+  .stacked .clock-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    line-height: 0.96;
+  }
+  .stacked .clock-hours,
+  .stacked .clock-minutes {
+    display: block;
+    font-size: 3.0em;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+  }
+  .stacked .clock-rule {
+    display: block;
+    width: 2.4em;
+    height: 1px;
+    margin: 0.12em 0;
+    background: currentColor;
+    opacity: 0.45;
+  }
+  .stacked .card { flex-direction: column; align-items: stretch; }
+  .stacked .clock-bottom {
+    display: flex;
+    align-items: baseline;
+    justify-content: flex-end;
+    gap: 9px;
+  }
+  .stacked .clock-date-bottom,
+  .stacked .clock-weekday-bottom {
+    display: inline-block;
+    font-size: 0.8em;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+  }
+  .stacked .clock-date-bottom { opacity: 0.9; }
+  .stacked .clock-weekday-bottom { opacity: 0.55; }
+
+  /* 变体 A：日期在上 */
+  .stacked-a .clock-bottom { order: -1; margin: 0 0 7px; }
+
+  /* 变体 B：日期在下，两行右对齐 */
+  .stacked-b .clock-bottom {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 3px;
+    margin-top: 7px;
+    padding-top: 6px;
+    border-top: 1px solid currentColor;
+    box-shadow: none;
+  }
+
+  /* ------------------------------------------------------------ outline */
+
+  /* outline 忽略 cardBackground：始终透明、无描边、无阴影 */
+  .outline .card {
+    background-color: transparent;
+    background-image: none;
+    backdrop-filter: none;
+    border-color: transparent;
+    box-shadow: none;
+  }
+  .outline .clock-main { display: flex; align-items: baseline; justify-content: center; gap: 8px; }
+  .outline .clock-time {
+    display: inline-block;
+    font-size: 3.4em;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    line-height: 1;
+    -webkit-text-stroke: 1px currentColor;
+    text-shadow: none;
+  }
+  .outline .clock-bottom {
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 10px;
+    margin-top: 2px;
+  }
+  .outline .clock-date-bottom {
+    display: inline-block;
+    font-size: 0.7em;
+    font-weight: 700;
+    letter-spacing: 0.3em;
+    opacity: 0.9;
+  }
+  .outline .clock-weekday-bottom {
+    display: inline-block;
+    font-size: 0.7em;
+    font-weight: 700;
+    letter-spacing: 0.3em;
+    opacity: 0.6;
+  }
+
+  /* ---------------------------------------------------------------- fps */
+
+  .fps .card {
+    display: inline-flex;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 8px;
+    width: auto;
+    color: var(--fps-value);
+  }
+  .fps .fps-label {
+    flex: 0 0 auto;
+    font-size: 0.72em;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    opacity: 0.6;
+    color: var(--fps-label);
+  }
+  .fps .fps-value {
+    flex: 0 0 auto;
+    font-size: 1em;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--fps-value);
+  }
+
+  /* --------------------------------------------------------------- perf */
+
+  .perf .card { width: 214px; }
+  .perf.is-horizontal .card { width: 288px; }
+  .perf .perf-body { display: flex; flex-direction: column; gap: 5px; }
+  .perf.is-horizontal .perf-body { flex-direction: row; gap: 10px; align-items: stretch; }
+
+  .perf .row {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .perf.is-horizontal .row {
+    flex: 1 1 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+  }
+
+  .perf .head {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+  }
+  .perf.is-horizontal .head { flex: 1 1 auto; justify-content: space-between; }
+
+  .perf .label {
+    flex: 0 0 auto;
+    font-size: 0.75em;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: var(--perf-label);
+  }
+  .perf .value {
+    flex: 0 0 auto;
+    font-size: 0.86em;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--perf-value);
+  }
+
+  .perf .track {
+    background: rgba(128, 128, 128, 0.28);
+    border-radius: 2px;
+    overflow: hidden;
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 5px;
+  }
+  .perf.is-horizontal .track {
+    width: 100%;
+    max-width: 72px;
+    height: 3px;
+    flex: 0 0 auto;
+  }
+  .perf .bar {
+    height: 100%;
+    width: 100%;
+    border-radius: 2px;
+    transform-origin: left center;
+  }
+
+  .perf .details {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    border-top: 1px solid rgba(154, 164, 178, 0.18);
+    padding-top: 3px;
+  }
+  .perf .detail {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    font-size: 0.7em;
+    opacity: 0.78;
+  }
+  .perf .detail-label { flex: 0 0 auto; color: var(--perf-label); }
+  .perf .detail-value {
+    flex: 1 1 auto;
+    text-align: right;
+    font-weight: 600;
+    color: var(--perf-value);
+  }
+
+  /* 介绍图模式：`preview.html?cover` 只留最小、FPS 与竖排性能三张卡，排成 1280×720 的封面，
+     供无头浏览器截图为仓库里的 preview.png。左侧文案由下面的脚本注入。 */
+  body.cover-mode {
+    display: flex;
+    align-items: center;
+    gap: 60px;
+    box-sizing: border-box;
+    width: 1280px;
+    height: 720px;
+    margin: 0;
+    padding: 0 64px;
+    background: radial-gradient(120% 120% at 18% 0%, #1c1c24 0%, #0a0a0c 62%);
+  }
+  body.cover-mode .cover-intro { flex: 0 0 470px; }
+  body.cover-mode .cover-intro h1 {
+    margin: 0 0 10px;
+    font-size: 44px;
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+  }
+  body.cover-mode .cover-intro .cover-sub {
+    margin: 0 0 26px;
+    font-family: var(--mono);
+    font-size: 14px;
+    letter-spacing: 0.08em;
+    color: #8b8f99;
+  }
+  body.cover-mode .cover-intro ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    font-size: 15px;
+    line-height: 1.5;
+    color: #c9ccd4;
+  }
+  body.cover-mode .cover-intro li::before {
+    content: "";
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-right: 10px;
+    border-radius: 50%;
+    background: #5ac8fa;
+    vertical-align: 2px;
+  }
+  body.cover-mode > h1,
+  body.cover-mode > .note { display: none; }
+  body.cover-mode .grid { flex: 0 0 auto; flex-direction: column; gap: 14px; }
+  body.cover-mode .demo { display: none; }
+  body.cover-mode .demo.minimal,
+  body.cover-mode .demo.fps,
+  body.cover-mode .demo.perf:not(.is-horizontal) { display: block; }
+  body.cover-mode .demo > h2 { display: none; }
+  body.cover-mode .demo .note { display: none; }
+  body.cover-mode .grid { transform: scale(1.45); transform-origin: left center; }
+  body.cover-mode .demo.fps .card + .card { display: none; }
+</style>
+</head>
+<body>
+
+<h1>clock-perf-widget v2.2.0 · 样式预览</h1>
+<p class="note">
+  左侧标签为组件名。scale = 1，cardOpacity = 0.55，backdropOpacity = 0.55，颜色取默认值。
+  时间固定为 21:41 便于比对；terminal 的光标与冒号在真实挂件里由 JS 每 500ms 切换，此处用 CSS 动画等效演示。
+</p>
+
+<div class="grid">
+
+  <!-- ---------------------------------------------------------- minimal -->
+  <section class="demo minimal">
+    <h2>clock · minimal</h2>
+    <div class="card">
+      <div class="clock-main">
+        <span class="clock-time">21:41</span>
+        <span class="clock-date-inline">9月21日</span>
+        <span class="clock-weekday-inline">周日</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- --------------------------------------------------------- terminal -->
+  <section class="demo terminal">
+    <h2>clock · terminal</h2>
+    <div class="card">
+      <div class="clock-row-top">
+        <span class="clock-prompt">&gt;_</span>
+        <span class="clock-date-top">2025-09-21</span>
+        <span class="clock-weekday-top">周日</span>
+      </div>
+      <div class="clock-main">
+        <span class="clock-term">
+          <span class="clock-term-hours">21</span><span class="clock-term-colon">:</span><span class="clock-term-minutes">41</span>
+        </span>
+        <span class="clock-cursor">▌</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ---------------------------------------------------------- stacked -->
+  <section class="demo stacked stacked-a">
+    <h2>clock · stacked A 日期在上</h2>
+    <div class="card">
+      <div class="clock-stack">
+        <span class="clock-hours">21</span>
+        <span class="clock-rule"></span>
+        <span class="clock-minutes">41</span>
+      </div>
+      <div class="clock-bottom">
+        <span class="clock-date-bottom">9月21日</span>
+        <span class="clock-weekday-bottom">周日</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="demo stacked stacked-b">
+    <h2>clock · stacked B 日期在下</h2>
+    <div class="card">
+      <div class="clock-stack">
+        <span class="clock-hours">21</span>
+        <span class="clock-rule"></span>
+        <span class="clock-minutes">41</span>
+      </div>
+      <div class="clock-bottom">
+        <span class="clock-date-bottom">9月21日</span>
+        <span class="clock-weekday-bottom">周日</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ----------------------------------------------------------- outline -->
+  <section class="demo outline">
+    <h2>clock · outline</h2>
+    <div class="card">
+      <div class="clock-main">
+        <span class="clock-time">21:41</span>
+      </div>
+      <div class="clock-bottom">
+        <span class="clock-date-bottom">9月21日</span>
+        <span class="clock-weekday-bottom">周日</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- -------------------------------------------------------------- fps -->
+  <section class="demo fps">
+    <h2>fps</h2>
+    <div class="card">
+      <span class="fps-label">FPS</span>
+      <span class="fps-value">60</span>
+    </div>
+    <div class="card">
+      <span class="fps-label" style="display:none">FPS</span>
+      <span class="fps-value">60</span>
+    </div>
+    <p class="note" style="margin:0">上：显示标签；下：隐藏标签后卡片自动收窄，右侧不留空。</p>
+  </section>
+
+  <!-- ------------------------------------------------- perf · vertical -->
+  <section class="demo perf">
+    <h2>perf · vertical（默认）</h2>
+    <div class="card">
+      <div class="perf-body">
+        <div class="row">
+          <div class="head">
+            <div class="label">CPU</div>
+            <div class="value">37.2%</div>
+          </div>
+          <div class="track"><div class="bar" style="background: var(--cpu); transform: scaleX(0.372)"></div></div>
+        </div>
+        <div class="row">
+          <div class="head">
+            <div class="label">内存</div>
+            <div class="value">7.9 GB</div>
+          </div>
+          <div class="track"><div class="bar" style="background: var(--memory); transform: scaleX(0.625)"></div></div>
+        </div>
+        <div class="row">
+          <div class="head">
+            <div class="label">GPU</div>
+            <div class="value">18.4%</div>
+          </div>
+          <div class="track"><div class="bar" style="background: var(--gpu); transform: scaleX(0.184)"></div></div>
+        </div>
+      </div>
+      <div class="details">
+        <div class="detail"><div class="detail-label">主进程</div><div class="detail-value">1.2%</div></div>
+        <div class="detail"><div class="detail-label">渲染进程</div><div class="detail-value">3.4%</div></div>
+        <div class="detail"><div class="detail-label">GPU 进程</div><div class="detail-value">0.9%</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ----------------------------------------------- perf · horizontal -->
+  <section class="demo perf is-horizontal">
+    <h2>perf · horizontal</h2>
+    <div class="card">
+      <div class="perf-body">
+        <div class="row">
+          <div class="head">
+            <div class="label">CPU</div>
+            <div class="value">37.2%</div>
+          </div>
+          <div class="track"><div class="bar" style="background: var(--cpu); transform: scaleX(0.372)"></div></div>
+        </div>
+        <div class="row">
+          <div class="head">
+            <div class="label">内存</div>
+            <div class="value">7.9 GB</div>
+          </div>
+          <div class="track"><div class="bar" style="background: var(--memory); transform: scaleX(0.625)"></div></div>
+        </div>
+        <div class="row">
+          <div class="head">
+            <div class="label">GPU</div>
+            <div class="value">18.4%</div>
+          </div>
+          <div class="track"><div class="bar" style="background: var(--gpu); transform: scaleX(0.184)"></div></div>
+        </div>
+      </div>
+      <div class="details">
+        <div class="detail"><div class="detail-label">主进程</div><div class="detail-value">1.2%</div></div>
+        <div class="detail"><div class="detail-label">渲染进程</div><div class="detail-value">3.4%</div></div>
+        <div class="detail"><div class="detail-label">GPU 进程</div><div class="detail-value">0.9%</div></div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<script>
+  if (new URLSearchParams(location.search).has('cover')) {
+    document.body.classList.add('cover-mode');
+    document.title = 'clock-perf-widget 介绍图';
+    const intro = document.createElement('div');
+    intro.className = 'cover-intro';
+    intro.innerHTML =
+      '<h1>时钟 · FPS · 性能</h1>' +
+      '<p class="cover-sub">clock-perf-widget</p>' +
+      '<ul>' +
+      '<li>四种结构不同的时钟样式，日期与星期可分别关掉</li>' +
+      '<li>FPS 纯数字，标签可隐藏，字号 14–72 可调</li>' +
+      '<li>CPU / 内存 / GPU 占用与温度，竖排或三条横排</li>' +
+      '<li>三张卡片各自开关、各自拖拽记忆位置、各自倍率</li>' +
+      '</ul>';
+    document.body.prepend(intro);
+  }
+</script>
+
+</body>
+</html>
