@@ -1,13 +1,17 @@
 // selfcheck.mjs — offline harness for clock-perf-widget v2.
 //
 // There is no jsdom here, so this file carries a minimal DOM stub plus a minimal
-// Folium client stub (0.7.20 semantics: the settings handle exposes `params` and
-// has NO `onChange`, and settings changes reach no listener at all), mounts all
-// six stage layers, and asserts the widget's observable behavior.
+// Folium client stub (0.7.20 semantics: the settings handle exposes `params`,
+// `params.subscribe(listener)` is the change channel and there is no
+// `onChange`), mounts all six stage layers, and asserts the widget's observable
+// behavior.
 //
-// Run with `node selfcheck.mjs`; it exits non-zero if any assertion fails.
+// Run with `node .dev/selfcheck.mjs` from the mod root; it exits non-zero if any
+// assertion fails.
 
 /* ----------------------------------------------------------------- stubs */
+
+import { readdirSync, readFileSync } from 'node:fs';
 
 const makeStyle = () => {
   const style = {};
@@ -166,6 +170,9 @@ const makeFolium = () => {
     everyCalls: [],
     everyStops: 0,
     themeListeners: [],
+    settingsListeners: [],
+    frameListeners: [],
+    frameStops: 0,
     metrics: {
       totalCpu: 12.34,
       totalMemKb: 2 * 1024 * 1024,
@@ -198,13 +205,22 @@ const makeFolium = () => {
           }
           const handle = {
             id: def.id,
-            // Folia 0.7.20 names the access object `params` and has no `onChange`.
+            // Folia 0.7.20 names the access object `params` and pushes changes
+            // through `params.subscribe`; there is no `onChange`.
             params: {
               get: () => ({ ...state.values }),
               set: (patch) => {
                 Object.assign(state.values, patch);
+                for (const listener of state.settingsListeners.slice()) listener();
               },
               reset: () => {},
+              subscribe: (listener) => {
+                state.settingsListeners.push(listener);
+                return () => {
+                  const index = state.settingsListeners.indexOf(listener);
+                  if (index >= 0) state.settingsListeners.splice(index, 1);
+                };
+              },
             },
             unregister: () => {
               state.unregistered.sections += 1;
@@ -241,23 +257,36 @@ const makeFolium = () => {
     },
   };
 
-  const makeContext = () => ({
-    every(interval, fn) {
-      state.everyCalls.push({ interval, fn });
-      return () => {
-        state.everyStops += 1;
+  const makeContext = (options = {}) => {
+    const context = {
+      every(interval, fn) {
+        state.everyCalls.push({ interval, fn });
+        return () => {
+          state.everyStops += 1;
+        };
+      },
+      onChange(listener) {
+        state.themeListeners.push(listener);
+        return () => {
+          const index = state.themeListeners.indexOf(listener);
+          if (index >= 0) state.themeListeners.splice(index, 1);
+        };
+      },
+      getTheme: () => ({ isDaylight: false }),
+      isPreview: false,
+    };
+    if (options.hostFrame) {
+      context.onFrame = (listener) => {
+        state.frameListeners.push(listener);
+        return () => {
+          state.frameStops += 1;
+          const index = state.frameListeners.indexOf(listener);
+          if (index >= 0) state.frameListeners.splice(index, 1);
+        };
       };
-    },
-    onChange(listener) {
-      state.themeListeners.push(listener);
-      return () => {
-        const index = state.themeListeners.indexOf(listener);
-        if (index >= 0) state.themeListeners.splice(index, 1);
-      };
-    },
-    getTheme: () => ({ isDaylight: false }),
-    isPreview: false,
-  });
+    }
+    return context;
+  };
 
   return { folium, state, makeContext };
 };
@@ -295,7 +324,7 @@ const collectRoles = (root, out = []) => {
 const visible = (node) => node !== null && node.style.display !== 'none';
 
 const EXPECTED_KEYS = [
-  'placement', 'refreshNow',
+  'placement',
   'clockShow', 'clockStyle', 'clockShowDate', 'clockShowWeekday', 'clock24', 'clockColor', 'cornerClock', 'clockClickThrough',
   'fpsShow', 'fpsShowLabel', 'fpsFontSize', 'fpsValueColor', 'fpsLabelColor', 'cornerFps', 'fpsClickThrough',
   'perfShow', 'showCpu', 'showMemory', 'showGpu', 'showDetails', 'barLayout',
@@ -317,13 +346,20 @@ const EXPECTED_LAYER_IDS = [
 
 const run = async () => {
   const { folium, state, makeContext } = makeFolium();
-  const { default: activate } = await import('./client.mjs');
+  const { default: activate } = await import('../client.mjs');
 
   /* --------------------------------------------------------- registration */
 
   const dispose = activate(folium);
   check('settings section registered once', state.sectionDef !== null);
-  check('settings schema has 36 entries (v2.1.1 adds three click-through switches)', state.sectionDef.settings.length === 36, String(state.sectionDef.settings.length));
+  check(
+    'the section names itself with label, the field the mods panel renders',
+    state.sectionDef.label && typeof state.sectionDef.label['zh-CN'] === 'string' && typeof state.sectionDef.label.en === 'string',
+    JSON.stringify(state.sectionDef.label),
+  );
+  check('the section carries no title field', state.sectionDef.title === undefined, String(state.sectionDef.title));
+  check('settings schema has 35 entries (v2.3.0 drops refreshNow)', state.sectionDef.settings.length === 35, String(state.sectionDef.settings.length));
+  check('the dropped one-shot refresh switch is gone', !state.settingsDefs.includes('refreshNow'), state.settingsDefs.join(','));
   check('setting keys and order match the v2 schema', state.settingsDefs.join(',') === EXPECTED_KEYS.join(','), state.settingsDefs.join(','));
   check(
     'every setting carries zh-CN and en labels',
@@ -362,6 +398,7 @@ const run = async () => {
   check('layer ids follow component+slot', state.layers.map((l) => l.id).join(',') === EXPECTED_LAYER_IDS.join(','), state.layers.map((l) => l.id).join(','));
   check('each component registers into both slots in order', state.layers.map((l) => l.slot).join(',') === EXPECTED_SLOTS.join(','), state.layers.map((l) => l.slot).join(','));
   check('the settings handle exposes params', typeof state.sectionHandle.params.get === 'function');
+  check('params pushes changes through subscribe', typeof state.sectionHandle.params.subscribe === 'function');
   check('the settings handle has no onChange (0.7.20 parity)', typeof state.sectionHandle.params.onChange === 'undefined');
   check('the settings handle has no `settings` alias in this stub', state.sectionHandle.settings === undefined);
 
@@ -387,6 +424,13 @@ const run = async () => {
   const perfPlayer = layerOf('perf', 'player.stage.front');
 
   check('every layer mounted its own card', mounted.every((m) => m.card !== null));
+  check('every layer subscribes to params.subscribe once', state.settingsListeners.length === 6, String(state.settingsListeners.length));
+  const thousandMsTimers = () => timersOf('interval').filter((timer) => timer.delay === 1000);
+  check(
+    'the only 1000ms interval is the visible clock tick, not a settings poll',
+    thousandMsTimers().length === 1,
+    JSON.stringify(thousandMsTimers().map((t) => t.delay)),
+  );
   check('component cards carry distinct roles', clockOverlay.card.dataset.role === 'card-clock' && fpsOverlay.card.dataset.role === 'card-fps' && perfOverlay.card.dataset.role === 'card-perf');
   check(
     'cards are fixed positioned with runtime pointer events',
@@ -396,7 +440,7 @@ const run = async () => {
 
   const setValues = async (patch) => {
     Object.assign(state.values, patch);
-    fireIntervals(1000);
+    for (const listener of state.settingsListeners.slice()) listener();
     await flush();
   };
   const tickMetrics = async () => {
@@ -425,22 +469,27 @@ const run = async () => {
   check('placement=off hides all six cards', mounted.every((m) => !visible(m.card)));
   await setValues({ placement: 'global' });
 
-  /* --------------------------------------------------- settings polling */
+  /* ------------------------------------------------ setting subscription */
 
-  check('the settings poll runs on a 1000ms interval', timersOf('interval').some((t) => t.delay === 1000), JSON.stringify(timersOf('interval').map((t) => t.delay)));
   const promptNode = findByRole(clockOverlay.card, 'clock-prompt');
   check('clock starts in the minimal style', !visible(promptNode));
   state.values.clockStyle = 'terminal';
+  for (const listener of state.settingsListeners.slice()) listener();
   await flush();
-  check('a settings change alone does not repaint (host pushes nothing)', !visible(promptNode));
-  fireIntervals(1000);
-  await flush();
-  check('one poll picks the change up and repaints', visible(promptNode));
+  check('the subscribe callback repaints without any timer firing', visible(promptNode), 'subscribers=' + state.settingsListeners.length);
+  check(
+    'a settings change never brings a settings poll back',
+    thousandMsTimers().length === 1,
+    JSON.stringify(thousandMsTimers().map((t) => t.delay)),
+  );
 
-  state.values.refreshNow = true;
-  fireIntervals(1000);
-  await flush();
-  check('the one-shot refresh switch resets itself', state.values.refreshNow === false, String(state.values.refreshNow));
+  await setValues({ clockShow: false, fpsShow: false, perfShow: false });
+  check(
+    'with every component off no interval survives, so nothing polls settings',
+    timersOf('interval').length === 0,
+    JSON.stringify(timersOf('interval').map((t) => t.delay)),
+  );
+  await setValues({ clockShow: true, fpsShow: true, perfShow: true, clockStyle: 'terminal' });
 
   /* -------------------------------------------------------- clock styles */
 
@@ -609,6 +658,34 @@ const run = async () => {
   check('the FPS number colour reaches the value node', fpsValue.style.color === '#ff2d55', fpsValue.style.color);
   check('the FPS label colour reaches the label node', fpsLabel.style.color === '#123456', fpsLabel.style.color);
 
+  /* --------------------------------------------- host frame loop (0.7.20) */
+
+  const hostFrameCtx = makeContext({ hostFrame: true });
+  const hostFrameContainer = createNode('div');
+  const fpsDef = state.layers.find((layer) => layer.id === 'clock-perf-fps-overlay');
+  const hostFrameDestroy = fpsDef.mount(hostFrameContainer, hostFrameCtx);
+  const hostFrameCard = findByRole(hostFrameContainer, 'card-fps');
+  const queuedBefore = raf.queue.length;
+  check(
+    'a host frame loop replaces the private rAF loop',
+    state.frameListeners.length === 1 && raf.queue.length === queuedBefore,
+    'listeners=' + state.frameListeners.length + ' raf=' + raf.queue.length,
+  );
+  state.frameListeners[0](5000);
+  state.frameListeners[0](5500);
+  state.frameListeners[0](6000);
+  check(
+    'the host frame loop drives the FPS counter',
+    findByRole(hostFrameCard, 'fps-value').textContent === '3',
+    findByRole(hostFrameCard, 'fps-value').textContent,
+  );
+  hostFrameDestroy();
+  check(
+    'disposing hands the frame listener back to the host',
+    state.frameListeners.length === 0 && state.frameStops === 1,
+    'listeners=' + state.frameListeners.length + ' stops=' + state.frameStops,
+  );
+
   /* -------------------------------------------------------- perf metrics */
 
   await setValues({ fpsFontSize: 26, fpsValueColor: '#5ac8fa', fpsLabelColor: '#9aa4b2' });
@@ -616,7 +693,14 @@ const run = async () => {
   const memoryRow = findByRole(perfOverlay.card, 'row-memory');
   const gpuRow = findByRole(perfOverlay.card, 'row-gpu');
   check('metrics were fetched through folium.rpc.call', state.rpcCalls.length >= 1 && state.rpcCalls[0].name === 'metrics');
+  check(
+    'the renderer passes the gpu flag to the main process',
+    state.rpcCalls.every((call) => call.args.length === 1 && call.args[0] && call.args[0].gpu === true),
+    JSON.stringify(state.rpcCalls[0]),
+  );
   check('the metrics loop uses ctx.every at the 1000ms default', state.everyCalls.length >= 1 && state.everyCalls[0].interval === 1000, JSON.stringify(state.everyCalls.map((e) => e.interval)));
+  check('the CPU row is named Folia CPU, not whole-machine CPU', findByRole(cpuRow, 'label-cpu').textContent === 'Folia CPU', findByRole(cpuRow, 'label-cpu').textContent);
+  check('the memory row is named Folia 内存, not whole-machine memory', findByRole(memoryRow, 'label-memory').textContent === 'Folia 内存', findByRole(memoryRow, 'label-memory').textContent);
   check('CPU row shows the aggregated percentage', findByRole(cpuRow, 'value-cpu').textContent === '12.3%', findByRole(cpuRow, 'value-cpu').textContent);
   check('CPU bar is normalised against 100%', findByRole(cpuRow, 'bar-cpu').style.transform === 'scaleX(0.1234)', findByRole(cpuRow, 'bar-cpu').style.transform);
   check('memory row formats KB as GB', findByRole(memoryRow, 'value-memory').textContent === '2.0 GB', findByRole(memoryRow, 'value-memory').textContent);
@@ -689,23 +773,36 @@ const run = async () => {
   /* --------------------------------------------------------- GPU source */
 
   const gpuValue = findByRole(gpuRow, 'value-gpu');
+  check('the GPU row keeps the plain GPU name', findByRole(gpuRow, 'label-gpu').textContent === 'GPU', findByRole(gpuRow, 'label-gpu').textContent);
   check('nvidia-smi source shows utilization and temperature', gpuValue.textContent === '14% · 45°C', gpuValue.textContent);
   const sourceNode = findByRole(perfOverlay.card, 'perf-source');
   check('nvidia-smi source line carries VRAM and power', /^nvidia-smi · VRAM 5\.8\/11\.9 GB · 45\.3 W$/.test(sourceNode.textContent), sourceNode.textContent);
+  const gpuBar = findByRole(gpuRow, 'bar-gpu');
 
-  state.metrics = {
-    ...state.metrics,
-    gpu: { utilPct: 3.2, tempC: null, memUsedMb: null, memTotalMb: null, powerW: null, source: 'electron' },
-  };
+  state.metrics = { ...state.metrics, gpu: null };
   await tickMetrics();
-  check('the electron fallback shows — for the temperature', gpuValue.textContent === '3% · —', gpuValue.textContent);
-  check('the electron fallback is labelled', sourceNode.textContent === 'electron · 无 GPU 温度', sourceNode.textContent);
+  check(
+    'no nvidia-smi means no GPU reading at all, not a CPU percentage in its place',
+    gpuValue.textContent === '—' && gpuBar.style.transform === 'scaleX(0.0000)',
+    gpuValue.textContent + '/' + gpuBar.style.transform,
+  );
+  check(
+    'the empty GPU row says what it needs',
+    sourceNode.textContent === '无 nvidia-smi · 占用与温度仅支持 NVIDIA 显卡',
+    sourceNode.textContent,
+  );
+  check(
+    'the GPU process still reports its own CPU in the details',
+    findByRole(perfOverlay.card, 'detail-value-gpu').textContent === '1% · 300.0 MB',
+    findByRole(perfOverlay.card, 'detail-value-gpu').textContent,
+  );
 
   state.metrics = {
     ...state.metrics,
     gpu: { utilPct: 14, tempC: 45, memUsedMb: 5924, memTotalMb: 12227, powerW: 45.26, source: 'nvidia-smi' },
   };
   await tickMetrics();
+  check('the GPU row comes back when nvidia-smi answers again', gpuValue.textContent === '14% · 45°C', gpuValue.textContent);
 
   /* ------------------------------------------------------------ details */
 
@@ -722,6 +819,13 @@ const run = async () => {
   check('the CPU switch hides only the CPU row', !visible(cpuRow) && visible(memoryRow) && visible(gpuRow));
   await setValues({ showCpu: true, showGpu: false });
   check('the GPU switch hides only the GPU row', visible(cpuRow) && !visible(gpuRow));
+  await tickMetrics();
+  const gpuOffCall = state.rpcCalls[state.rpcCalls.length - 1];
+  check(
+    'hiding the GPU row tells the main process to skip nvidia-smi',
+    gpuOffCall.args.length === 1 && gpuOffCall.args[0].gpu === false,
+    JSON.stringify(gpuOffCall),
+  );
   await setValues({ showGpu: true });
 
   /* -------------------------------------------------------------- scale */
@@ -956,6 +1060,31 @@ const run = async () => {
   check('the perf switch hides both perf layers', !visible(perfOverlay.card) && !visible(perfPlayer.card) && visible(clockOverlay.card));
   check('hiding the panel stops the metrics loop', state.everyStops > stopsBefore, String(state.everyStops - stopsBefore));
   await setValues({ perfShow: true });
+
+  /* ------------------------------------------------- distribution hygiene */
+
+  const modRoot = new URL('../', import.meta.url);
+  const rootEntries = readdirSync(modRoot);
+  check(
+    'development files live under .dev/ so the market never signs them',
+    rootEntries.includes('.dev') && !rootEntries.includes('selfcheck.mjs') && !rootEntries.includes('preview.html'),
+    rootEntries.join(','),
+  );
+  check(
+    'the dev harness and its preview page both sit in .dev/',
+    readdirSync(new URL('.', import.meta.url)).sort().join(',') === 'preview.html,selfcheck.mjs',
+    readdirSync(new URL('.', import.meta.url)).join(','),
+  );
+  check('preview.png stays in the root for the manifest preview field', rootEntries.includes('preview.png'));
+  const runtimeSources = ['client.mjs', 'main.cjs'].map((name) => readFileSync(new URL(name, modRoot), 'utf8'));
+  check(
+    'no runtime file references the dev files',
+    runtimeSources.every((text) => !text.includes('selfcheck.mjs') && !text.includes('preview.html')),
+  );
+  check(
+    'the refreshNow switch left no trace in the runtime',
+    runtimeSources.every((text) => !text.includes('refreshNow')),
+  );
 
   /* ------------------------------------------------------------ teardown */
 

@@ -2,17 +2,21 @@
 
 // mods/clock-perf-widget/main.cjs — Electron 主进程入口（v2）。
 //
-// 回答客户端 `folium.rpc.call('metrics')`：app.getAppMetrics() 的 CPU/内存
-// 汇总 + 分进程明细，外加 GPU 数据。GPU 优先走 nvidia-smi（占用/温度/显存/
-// 功耗），拿不到就退回 Electron GPU 进程的 percentCPUUsage，此时温度是 null。
+// 回答客户端 `folium.rpc.call('metrics', { gpu })`：app.getAppMetrics() 的
+// CPU/内存汇总 + 分进程明细，外加 GPU 数据。`gpu: false` 时完全不跑
+// nvidia-smi，`gpu` 返回 null（旧的无参数调用按 true 处理）。GPU 数据只来自
+// nvidia-smi（占用/温度/显存/功耗），没有它就没有 GPU 数据。
 //
-// nvidia-smi 结果缓存 2 秒；一次失败后记忆并降级，不再反复 spawn，也只记一条日志。
+// nvidia-smi 结果缓存 2 秒；连续失败 3 次才停用，每次失败后冷却 60 秒再试，
+// 日志只记一条。
 
 const { execFile } = require('child_process');
 
 const RPC_METRICS = 'metrics';
 const NVIDIA_TTL_MS = 2000;
 const NVIDIA_TIMEOUT_MS = 3000;
+const NVIDIA_FAILURE_COOLDOWN_MS = 60000;
+const NVIDIA_MAX_FAILURES = 3;
 const NVIDIA_QUERY = 'name,utilization.gpu,temperature.gpu,memory.used,memory.total,power.draw';
 const NVIDIA_FORMAT = 'csv,noheader,nounits';
 
@@ -52,12 +56,14 @@ const parseNvidia = (stdout) => {
   };
 };
 
+// Windows 按名字查找可执行文件会先搜当前目录，所以完整路径排在裸名字前面。
 const nvidiaCommands = () => {
-  const list = ['nvidia-smi'];
+  const list = [];
   if (process.platform === 'win32') {
     const root = process.env.SystemRoot || 'C:\\Windows';
     list.push(root + '\\System32\\nvidia-smi.exe');
   }
+  list.push('nvidia-smi');
   return list;
 };
 
@@ -85,9 +91,10 @@ module.exports = function activate(api) {
 
   const round2 = (value) => Math.round(value * 100) / 100;
 
-  let nvidiaDisabled = false;
   let nvidiaCacheAt = 0;
   let nvidiaCache = null;
+  let nvidiaFailures = 0;
+  let nvidiaRetryAt = 0;
   let warnedNvidia = false;
 
   const warnNvidia = (error) => {
@@ -95,22 +102,26 @@ module.exports = function activate(api) {
     warnedNvidia = true;
     if (api && api.log && typeof api.log.warn === 'function') {
       const reason = error && error.message ? error.message : String(error);
-      api.log.warn('clock-perf-widget: nvidia-smi unavailable, falling back to the Electron GPU process (' + reason + ')');
+      api.log.warn('clock-perf-widget: nvidia-smi unavailable (' + reason + '); GPU metrics stay empty');
     }
   };
 
   const readNvidia = async () => {
-    if (nvidiaDisabled) return null;
+    if (nvidiaFailures >= NVIDIA_MAX_FAILURES) return null;
+    if (Date.now() < nvidiaRetryAt) return null;
     if (nvidiaCache && Date.now() - nvidiaCacheAt < NVIDIA_TTL_MS) return nvidiaCache;
     for (const command of nvidiaCommands()) {
       const value = await runNvidia(command);
       if (value) {
         nvidiaCache = value;
         nvidiaCacheAt = Date.now();
+        nvidiaFailures = 0;
+        nvidiaRetryAt = 0;
         return value;
       }
     }
-    nvidiaDisabled = true;
+    nvidiaFailures += 1;
+    nvidiaRetryAt = Date.now() + NVIDIA_FAILURE_COOLDOWN_MS;
     warnNvidia('no usable nvidia-smi output');
     return null;
   };
@@ -148,9 +159,11 @@ module.exports = function activate(api) {
     };
   };
 
-  const collect = async () => {
+  const collect = async (request) => {
+    // 旧调用 `folium.rpc.call('metrics')` 不带参数，按「要 GPU」处理。
+    const wantsGpu = !(request && request.gpu === false);
     const system = collectSystem();
-    const nvidia = await readNvidia();
+    const nvidia = wantsGpu ? await readNvidia() : null;
     const gpu = nvidia
       ? {
           utilPct: round2(nvidia.utilPct),
@@ -160,14 +173,7 @@ module.exports = function activate(api) {
           powerW: nvidia.powerW,
           source: 'nvidia-smi',
         }
-      : {
-          utilPct: system.byType.gpu.cpu,
-          tempC: null,
-          memUsedMb: null,
-          memTotalMb: null,
-          powerW: null,
-          source: 'electron',
-        };
+      : null;
 
     return {
       totalCpu: system.totalCpu,
@@ -177,11 +183,11 @@ module.exports = function activate(api) {
     };
   };
 
-  api.rpc.handle(RPC_METRICS, () => collect());
+  api.rpc.handle(RPC_METRICS, (request) => collect(request));
 
   if (api && typeof api.onDispose === 'function') {
     api.onDispose(() => {
-      nvidiaDisabled = true;
+      nvidiaFailures = NVIDIA_MAX_FAILURES;
       nvidiaCache = null;
     });
   }

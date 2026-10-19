@@ -7,15 +7,16 @@
  *
  * 卡片 DOM 每个 layer 只建一次；刷新只写 textContent / style / transform。
  *
- * 宿主的设置变更不会送达 stage layer（改设置后 ctx.onChange 不触发），所以
- * 每个已挂载的 layer 每秒轮询一次 settings.get()，序列化结果变了就重跑
- * apply()。轮询本身不算组件循环：组件不可见或关闭时组件自己的 rAF/interval
- * 一律停掉（syncLoops）。
+ * 设置变更由设置句柄的 `subscribe`（0.7.20 起）推给层，回调里自己再 get()
+ * 一次并重跑 apply()。只有拿不到 `subscribe` 的老宿主才退回每秒轮询
+ * settings.get()。轮询本身不算组件循环：组件不可见或关闭时组件自己的
+ * rAF/interval 一律停掉（syncLoops）。
  */
 
 /* ------------------------------------------------------------------ 常量 */
 
-const POLL_MS = 1000;
+/** 拿不到 `subscribe` 时的兜底轮询间隔；0.7.20 以前的宿主只有这条路。 */
+const FALLBACK_POLL_MS = 1000;
 const CORNER_MARGIN = 16;
 
 /** 时钟停靠左侧时再让开的距离：窗口左上角有返回/菜单按钮。 */
@@ -117,18 +118,6 @@ const SETTINGS = [
       { value: 'off', label: label('关闭', 'Off') },
     ],
   },
-  {
-    key: 'refreshNow',
-    type: 'boolean',
-    label: label('立即刷新一次', 'Refresh now'),
-    group: GROUP_GENERAL,
-    description: label(
-      '宿主不推送设置变更，卡片每秒轮询一次配置；打开这一项只是让下一次应用立刻发生，读完会自己关掉。',
-      'The host pushes no settings changes, cards poll once per second; this forces the next apply immediately and resets itself.',
-    ),
-    defaultValue: false,
-  },
-
   {
     key: 'clockShow',
     type: 'boolean',
@@ -882,7 +871,7 @@ const createClockCard = () => {
 
 /* ------------------------------------------------------------------ FPS */
 
-const createFpsCard = () => {
+const createFpsCard = (services) => {
   const card = makeElement('div', CARD_SHELL_CSS + 'display:inline-flex;flex-direction:row;align-items:baseline;gap:8px;');
   card.dataset.role = 'card-fps';
 
@@ -899,8 +888,10 @@ const createFpsCard = () => {
   let frames = 0;
   let rafId = null;
   let windowStart = 0;
+  let frameStop = null;
 
-  const loop = (time) => {
+  /** 每帧计一次数；宿主帧循环与自带的 rAF 循环都走这里。 */
+  const count = (time) => {
     const stamp = isNumber(time) ? time : 0;
     if (windowStart === 0) windowStart = stamp;
     frames += 1;
@@ -909,6 +900,10 @@ const createFpsCard = () => {
       frames = 0;
       windowStart = stamp;
     }
+  };
+
+  const loop = (time) => {
+    count(time);
     rafId = typeof requestAnimationFrame === 'function' ? requestAnimationFrame(loop) : null;
   };
 
@@ -925,12 +920,33 @@ const createFpsCard = () => {
 
   const start = (next) => {
     render(next);
-    if (rafId === null && typeof requestAnimationFrame === 'function') rafId = requestAnimationFrame(loop);
+    if (frameStop !== null) return;
+    const ctxObject = services && services.ctx;
+    if (ctxObject && typeof ctxObject.onFrame === 'function') {
+      try {
+        const disposer = ctxObject.onFrame(count);
+        if (typeof disposer === 'function') {
+          frameStop = disposer;
+          return;
+        }
+      } catch (error) {
+        persistWarn(services.folium, 'ctx.onFrame', error);
+      }
+    }
+    if (rafId === null && typeof requestAnimationFrame === 'function') {
+      rafId = requestAnimationFrame(loop);
+      frameStop = () => {
+        if (rafId !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rafId);
+        rafId = null;
+      };
+    }
   };
 
   const stop = () => {
-    if (rafId !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rafId);
-    rafId = null;
+    if (frameStop !== null) {
+      frameStop();
+      frameStop = null;
+    }
     frames = 0;
     windowStart = 0;
   };
@@ -995,8 +1011,8 @@ const createPerfCard = (services) => {
   body.dataset.role = 'perf-body';
 
   const rows = {
-    cpu: makeMetricRow('cpu', 'CPU'),
-    memory: makeMetricRow('memory', '内存'),
+    cpu: makeMetricRow('cpu', 'Folia CPU'),
+    memory: makeMetricRow('memory', 'Folia 内存'),
     gpu: makeMetricRow('gpu', 'GPU'),
   };
 
@@ -1027,6 +1043,8 @@ const createPerfCard = (services) => {
   let intervalMs = 0;
   let stopper = null;
   let inFlight = false;
+  /* 渲染端只在真的要看 GPU 时才让主进程跑 nvidia-smi。 */
+  let wantsGpu = true;
 
   const paintRow = (key, ratio, valueText, barColor, labelColor, valueColor) => {
     const row = rows[key];
@@ -1078,10 +1096,7 @@ const createPerfCard = (services) => {
     if (latest) {
       const totalCpu = Number(latest.totalCpu) || 0;
       const totalMemKb = Number(latest.totalMemKb) || 0;
-      const gpu = latest.gpu || {};
-      const utilPct = Number(gpu.utilPct) || 0;
-      const hasTemp = isNumber(gpu.tempC);
-      const tempText = hasTemp ? Math.round(gpu.tempC) + '°C' : '—';
+      const gpu = latest.gpu && typeof latest.gpu === 'object' ? latest.gpu : null;
 
       paintRow('cpu', totalCpu / 100, round1(totalCpu) + '%', perf.colorCpu, perf.labelColor, perf.valueColor);
       paintRow(
@@ -1089,14 +1104,6 @@ const createPerfCard = (services) => {
         totalMemKb / 1048576 / perf.memoryLimitGb,
         formatMemory(totalMemKb),
         perf.colorMemory,
-        perf.labelColor,
-        perf.valueColor,
-      );
-      paintRow(
-        'gpu',
-        utilPct / 100,
-        Math.round(utilPct) + '% · ' + tempText,
-        perf.colorGpu,
         perf.labelColor,
         perf.valueColor,
       );
@@ -1108,14 +1115,25 @@ const createPerfCard = (services) => {
         detailRows[key].value.textContent = cpuPart + ' · ' + formatMemory(entry.memKb);
       }
 
-      if (gpu.source === 'nvidia-smi') {
+      if (gpu) {
+        const utilPct = Number(gpu.utilPct) || 0;
+        const tempText = isNumber(gpu.tempC) ? Math.round(gpu.tempC) + '°C' : '—';
+        paintRow(
+          'gpu',
+          utilPct / 100,
+          Math.round(utilPct) + '% · ' + tempText,
+          perf.colorGpu,
+          perf.labelColor,
+          perf.valueColor,
+        );
         const used = roundMbToGb(gpu.memUsedMb);
         const total = roundMbToGb(gpu.memTotalMb);
         const power = isNumber(gpu.powerW) ? round1(gpu.powerW) + ' W' : '—';
         source.textContent =
           'nvidia-smi · VRAM ' + (used === null ? '—' : used) + '/' + (total === null ? '—' : total) + ' GB · ' + power;
       } else {
-        source.textContent = 'electron · 无 GPU 温度';
+        paintRow('gpu', 0, '—', perf.colorGpu, perf.labelColor, perf.valueColor);
+        source.textContent = '无 nvidia-smi · 占用与温度仅支持 NVIDIA 显卡';
       }
       source.style.display = 'block';
     } else {
@@ -1134,7 +1152,7 @@ const createPerfCard = (services) => {
     inFlight = true;
     let result;
     try {
-      result = callRpc('metrics');
+      result = callRpc('metrics', { gpu: wantsGpu });
     } catch (error) {
       inFlight = false;
       persistWarn(folium, 'rpc.call', error);
@@ -1194,6 +1212,7 @@ const createPerfCard = (services) => {
   const render = (next) => {
     state = next;
     const perf = next.perf;
+    wantsGpu = perf.showGpu !== false;
     card.style.color = perf.valueColor;
     applyBodyLayout(perf.barLayout);
     const shadow = next.cardBackground ? 'none' : BARE_TEXT_SHADOW;
@@ -1261,15 +1280,6 @@ const mountWidget = ({ folium, settings, slot, container, ctx, component }) => {
     } catch (error) {
       warnOnce('settings.get', error);
       return {};
-    }
-  };
-
-  const setSetting = (patch) => {
-    if (!settings || typeof settings.set !== 'function') return;
-    try {
-      settings.set(patch);
-    } catch (error) {
-      warnOnce('settings.set', error);
     }
   };
 
@@ -1556,39 +1566,38 @@ const mountWidget = ({ folium, settings, slot, container, ctx, component }) => {
   apply(readValues());
   restored = true;
 
-  /* 设置轮询 ------------------------------------------------------ */
+  /* 设置订阅 ------------------------------------------------------ */
 
+  const onHostChange = () => {
+    if (stopped) return;
+    lastSnapshot = snapshot();
+    apply(readValues());
+  };
+
+  const hostDisposers = [];
+  const subscribeSettings = () => {
+    if (!settings || typeof settings.subscribe !== 'function') return false;
+    try {
+      const disposer = settings.subscribe(onHostChange);
+      if (typeof disposer === 'function') hostDisposers.push(disposer);
+      return true;
+    } catch (error) {
+      warnOnce('settings.subscribe', error);
+      return false;
+    }
+  };
+
+  /* 兜底：0.7.20 以前的宿主没有 subscribe，只能每秒比对一次快照。 */
   const poll = () => {
     if (stopped) return;
     const next = snapshot();
     if (next === lastSnapshot) return;
     lastSnapshot = next;
-    const values = readValues();
-    apply(values);
-    if (values.refreshNow === true) setSetting({ refreshNow: false });
+    apply(readValues());
   };
 
-  const pollTimer = typeof setInterval === 'function' ? setInterval(poll, POLL_MS) : null;
-
-  /* 宿主回调（best effort，0.7.20 不触发） ------------------------- */
-
-  const onHostChange = () => {
-    if (stopped) return;
-    const values = readValues();
-    lastSnapshot = snapshot();
-    apply(values);
-    if (values.refreshNow === true) setSetting({ refreshNow: false });
-  };
-
-  const hostDisposers = [];
-  if (settings && typeof settings.onChange === 'function') {
-    try {
-      const disposer = settings.onChange(onHostChange);
-      if (typeof disposer === 'function') hostDisposers.push(disposer);
-    } catch (error) {
-      warnOnce('settings.onChange', error);
-    }
-  }
+  let pollTimer = null;
+  if (!subscribeSettings() && typeof setInterval === 'function') pollTimer = setInterval(poll, FALLBACK_POLL_MS);
   if (ctxObject && typeof ctxObject.onChange === 'function') {
     try {
       const disposer = ctxObject.onChange(() => {
@@ -1659,7 +1668,7 @@ export default function activate(folium) {
 
   const section = folium.registries.settingsSections.register({
     id: 'folium-clock-perf',
-    title: { 'zh-CN': '时钟与性能悬浮窗', en: 'Clock and performance overlay' },
+    label: { 'zh-CN': '时钟与性能悬浮窗', en: 'Clock and performance overlay' },
     description: {
       'zh-CN': '时钟 / FPS / 性能监测三个独立悬浮卡。',
       en: 'Clock, FPS and performance cards, each with its own switch, position and style.',
